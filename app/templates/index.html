@@ -1,0 +1,640 @@
+<!DOCTYPE HTML>
+<html>
+<head>
+    <link rel="stylesheet" type="text/css" href="{{ url_for('static',filename='w3.css') }}">
+    <title>Mining</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.5.1/jquery.min.js"
+            integrity="sha512-bLT0Qm9VnAYZDflyKcBaQ2gg0hSYNQrJ8RilYldYQ1FxQYoCLtUjuuRuZo+fjqhx/qtq/1itJ0C2ejDxltZVFg=="
+            crossorigin="anonymous"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/3.0.4/socket.io.js"
+            integrity="sha512-aMGMvNYu8Ue4G+fHa359jcPb1u+ytAF+P2SCb+PxrjCdO3n3ZTxJ30zuH39rimUggmTwmh2u7wvQsDTHESnmfQ=="
+            crossorigin="anonymous"></script>
+    <script type="text/javascript" charset="utf-8">
+
+        // these are the globals that help us coordinate the simulation...
+        // They do, in fact, represent global state
+        var hashCount = 0;
+        var hashTime = 0;
+        var miningAddress = Math.floor(Math.random() * 0xFFFFFFFFFFFF).toString(16).toUpperCase();
+        var currentHashMode = {{ hash_mode }};
+        var lasthash = {{ last_hash }};
+        var hashing = false;
+        var hashInterval = null;
+        var candidateHashWaiting = false;
+
+        $(document).ready(function () {
+            // Connect to the Socket.IO server.
+            // The connection URL has the following format, relative to the current page:
+            //     http[s]://<domain>:<port>[/<namespace>]
+            var socket = io();
+
+            // sha 256 implementation stolen from here: https://geraintluff.github.io/sha256/
+            var sha256 = function sha256(ascii) {
+                function rightRotate(value, amount) {
+                    return (value >>> amount) | (value << (32 - amount));
+                }
+
+                var mathPow = Math.pow;
+                var maxWord = mathPow(2, 32);
+                var lengthProperty = 'length'
+                var i, j; // Used as a counter across the whole file
+                var result = ''
+
+                var words = [];
+                var asciiBitLength = ascii[lengthProperty] * 8;
+
+                //* caching results is optional - remove/add slash from front of this line to toggle
+                // Initial hash value: first 32 bits of the fractional parts of the square roots of the first 8 primes
+                // (we actually calculate the first 64, but extra values are just ignored)
+                var hash = sha256.h = sha256.h || [];
+                // Round constants: first 32 bits of the fractional parts of the cube roots of the first 64 primes
+                var k = sha256.k = sha256.k || [];
+                var primeCounter = k[lengthProperty];
+                /*/
+                var hash = [], k = [];
+                var primeCounter = 0;
+                //*/
+                hashCount++;
+                var isComposite = {};
+                for (var candidate = 2; primeCounter < 64; candidate++) {
+                    if (!isComposite[candidate]) {
+                        for (i = 0; i < 313; i += candidate) {
+                            isComposite[i] = candidate;
+                        }
+                        hash[primeCounter] = (mathPow(candidate, .5) * maxWord) | 0;
+                        k[primeCounter++] = (mathPow(candidate, 1 / 3) * maxWord) | 0;
+                    }
+                }
+
+                ascii += '\x80' // Append Ƈ' bit (plus zero padding)
+                while (ascii[lengthProperty] % 64 - 56) ascii += '\x00' // More zero padding
+                for (i = 0; i < ascii[lengthProperty]; i++) {
+                    j = ascii.charCodeAt(i);
+                    if (j >> 8) return; // ASCII check: only accept characters in range 0-255
+                    words[i >> 2] |= j << ((3 - i) % 4) * 8;
+                }
+                words[words[lengthProperty]] = ((asciiBitLength / maxWord) | 0);
+                words[words[lengthProperty]] = (asciiBitLength)
+
+                // process each chunk
+                for (j = 0; j < words[lengthProperty];) {
+                    var w = words.slice(j, j += 16); // The message is expanded into 64 words as part of the iteration
+                    var oldHash = hash;
+                    // This is now the undefinedworking hash", often labelled as variables a...g
+                    // (we have to truncate as well, otherwise extra entries at the end accumulate
+                    hash = hash.slice(0, 8);
+
+                    for (i = 0; i < 64; i++) {
+                        var i2 = i + j;
+                        // Expand the message into 64 words
+                        // Used below if
+                        var w15 = w[i - 15], w2 = w[i - 2];
+
+                        // Iterate
+                        var a = hash[0], e = hash[4];
+                        var temp1 = hash[7]
+                            + (rightRotate(e, 6) ^ rightRotate(e, 11) ^ rightRotate(e, 25)) // S1
+                            + ((e & hash[5]) ^ ((~e) & hash[6])) // ch
+                            + k[i]
+                            // Expand the message schedule if needed
+                            + (w[i] = (i < 16) ? w[i] : (
+                                    w[i - 16]
+                                    + (rightRotate(w15, 7) ^ rightRotate(w15, 18) ^ (w15 >>> 3)) // s0
+                                    + w[i - 7]
+                                    + (rightRotate(w2, 17) ^ rightRotate(w2, 19) ^ (w2 >>> 10)) // s1
+                                ) | 0
+                            );
+                        // This is only used once, so *could* be moved below, but it only saves 4 bytes and makes things unreadble
+                        var temp2 = (rightRotate(a, 2) ^ rightRotate(a, 13) ^ rightRotate(a, 22)) // S0
+                            + ((a & hash[1]) ^ (a & hash[2]) ^ (hash[1] & hash[2])); // maj
+
+                        hash = [(temp1 + temp2) | 0].concat(hash); // We don't bother trimming off the extra ones, they're harmless as long as we're truncating when we do the slice()
+                        hash[4] = (hash[4] + temp1) | 0;
+                    }
+
+                    for (i = 0; i < 8; i++) {
+                        hash[i] = (hash[i] + oldHash[i]) | 0;
+                    }
+                }
+
+                for (i = 0; i < 8; i++) {
+                    for (j = 3; j + 1; j--) {
+                        var b = (hash[i] >> (j * 8)) & 255;
+                        result += ((b < 16) ? 0 : '') + b.toString(16);
+                    }
+                }
+                return result.toUpperCase();
+            };
+            // Event handler for new connections.
+            // The callback function is invoked when a connection with the
+            // server is established.
+            socket.on('connect', function () {
+                //socket.emit('my_event', {data: 'I\'m connected!'});
+                document.getElementById('name').value = miningAddress;
+                document.getElementById('miningaddress').value = miningAddress;
+
+                //fill in the current blockchain
+                let txns;
+                {% for single_block in blockchain %}
+                    txns = "{{ single_block[1]|safe}}".replace(/'/g, '"');
+                    addBlock("{{ single_block[0] }}", JSON.parse(txns), document.getElementById('blockchain'));
+                {% endfor %}
+
+            });
+
+            // Event handler for server sent data.
+            // The callback function is invoked whenever the server emits data
+            // to the client. The data is then displayed in the "Received"
+            // section of the page.
+            socket.on('my_response', function (msg, cb) {
+                //$('#log').append('<br>' + $('<div/>').text('Received #' + msg.count + ': ' + msg.data).html());
+                if (cb)
+                    cb();
+            });
+
+            // Test response received from server is handled here
+            socket.on('test_response', function (msg) {
+                $('#log').append('<br>' + $('<div/>').text(msg.data).html());
+            });
+
+            // Broadcast response from server is handled here
+            socket.on('broadcast_response', function (msg) {
+                //$('#log').append('<br>' + $('<div/>').text(msg).html());
+                let json = JSON.parse(msg.data);
+                document.getElementById('challenge').innerHTML = json.data;
+
+                //$('#challenge').innerHTML = 'test'; //$('<div/>').text(msg.data).html();
+                //$('#log').append('<br>' + 'done');
+            });
+
+            socket.on('transaction_response', function (msg) {
+                //$('#log').append('<br>' + $('<div/>').text(msg).html());
+                let txn = [msg["data"]];
+                let reward = constructMiningTransaction();
+                txn.push(reward);
+/*                const mergedObject = {
+                  ...reward,
+                  ...txn
+                };*/
+                document.getElementById('challenge').innerHTML = JSON.stringify(/*json.data +*/ txn, null, 2);
+                document.getElementById('candidate_previoushash').innerHTML = document.getElementById('previoushash').innerHTML
+                //msg["prevBlock"];
+                hashCount = 0;
+                hashing = true;
+
+                //$('#challenge').innerHTML = 'test'; //$('<div/>').text(msg.data).html();
+                //$('#log').append('<br>' + 'done');
+            });
+
+            socket.on('hash_response', function (msg) {
+                $('#log').append('<br>' + $('<div/>').text(msg).html());
+                let json = JSON.parse(msg.data)
+                document.getElementById('challenge').innerHTML = json.data;
+
+                //$('#challenge').innerHTML = 'test'; //$('<div/>').text(msg.data).html();
+                //$('#log').append('<br>' + 'done');
+            });
+
+            socket.on('difficulty_response', function (msg) {
+                //$('#log').append('<br>' + $('<div/>').text(msg).html());
+                //let json = JSON.parse(msg.data)
+                let json = JSON.parse(msg.data)
+                document.getElementById('difficulty').innerHTML = json.data;
+
+                //$('#challenge').innerHTML = 'test'; //$('<div/>').text(msg.data).html();
+                //$('#log').append('<br>' + 'done');
+            });
+
+            socket.on('valid_block_response', function (json) {
+                //let json = JSON.parse(msg);
+                if ( currentHashMode == 2 ){
+                   clearInterval(hashInterval); //if we are in mode 2 we need to stop hashing
+                    hashInterval = null;
+                }
+                hashing = false;
+                console.log(hashing);
+                if (!candidateHashWaiting) {
+                    document.getElementById('candidate_hash').innerHTML = json.data;
+                    document.getElementById('candidate_transactions').innerHTML = json.transactions;
+                    document.getElementById('candidate_nonce').innerHTML = json.nonce;
+                    document.getElementById('candidate_box').style.backgroundColor = "#F1D1D1";
+                    candidateHashWaiting = true;
+                }
+           });
+
+            socket.on('reward_response', function (msg) {
+                let json = JSON.parse(msg.data)
+                document.getElementById('reward').innerHTML = json.data;
+            });
+
+            socket.on('hash_mode_response', function (msg) {
+                //let json = JSON.parse(msg.data);
+                currentHashMode = parseInt(msg.data);
+            });
+
+            //display a block in the blockchain
+            function addBlock( hashVal, tx, parentElement ) {
+                // Get the parent element
+                //let parentElement = document.getElementById('blockchain');
+                // Get the parent's first child
+                let theFirstChild = parentElement.firstChild;
+
+                // Create a new element
+                let newBlock = document.createElement("div");
+                newBlock.className = "w3-panel w3-light-gray";
+                let heading = document.createElement("b");
+                heading.innerText = "Block ..." + hashVal.slice(-10);
+                newBlock.appendChild(heading);
+
+                let tbl = document.createElement('table');
+                tbl.className = "w3-table w3-bordered w3-striped";
+
+                let row = tbl.insertRow();
+                row.className = "w3-indigo";
+
+                let cell = row.insertCell(0);
+                heading = document.createElement("b");
+                heading.innerText = "From";
+                cell.appendChild( heading );
+                cell = row.insertCell(1);
+                heading = document.createElement("b");
+                heading.innerText = "To";
+                cell.appendChild( heading );
+                cell = row.insertCell(2);
+                heading = document.createElement("b");
+                heading.innerText = "Amount";
+                cell.appendChild( heading );
+
+                //let tx = JSON.parse(json.transactions);
+
+                //fill in the actual transactions
+                for (let i = 0; i < tx.length; i++) {
+                    row = tbl.insertRow();
+                    cell = row.insertCell(0);
+                    cell.appendChild(document.createTextNode(tx[i].source));
+                    cell = row.insertCell(1);
+                    cell.appendChild(document.createTextNode(tx[i].dest));
+                    cell = row.insertCell(2);
+                    cell.appendChild(document.createTextNode(tx[i].amount));
+                }
+                newBlock.appendChild(tbl);
+                parentElement.insertBefore(newBlock, theFirstChild)
+
+            }
+
+            function constructMiningTransaction(){
+                let name = document.getElementById('name').value;
+                let reward = document.getElementById('reward').innerHTML;
+                return { 'source':"MINT", 'dest':name, 'amount':reward };
+            }
+
+            function leadingZeros(h) {
+                let numZeros = 0;
+                let hex = h.toUpperCase();
+                for (let i = 0; i < hex.length; i++) {
+                    let c = hex.charCodeAt(i);
+                    c -= 48;
+                    if (c > 9) {
+                        c -= 8;
+                    }
+                    if (c > 7) return numZeros;
+                    numZeros++;
+                    if (c > 3) return numZeros;
+                    numZeros++;
+                    if (c > 1) return numZeros;
+                    numZeros++;
+                    if (c > 0) return numZeros;
+                    numZeros++;
+                }
+                return numZeros;
+            }
+
+            //return true if hash h has the required (as specified by the current difficulty) number of leading zeros in binary
+            function isValid(h) {
+                let z = leadingZeros(h);
+                if (z >= parseInt(document.getElementById('difficulty').innerText))
+                    return true;
+                return false;
+            }
+
+            //show the hash in binary and
+            function updateHashInfo(x) {
+                let z = leadingZeros(x);
+                let binhash = parseInt((x.substring(0, 16)), 16).toString(2)
+                binhash = "0000000000000000000000000000000000000000000000000000000000000000".substr(binhash.length) + binhash;
+                document.getElementById("binhash").innerHTML = binhash + "..."
+                if ( hashTime == 0) {
+                    document.getElementById("hashstats").innerHTML = "Lead zeros: " + z + ", Hashes: " + hashCount;
+                }
+                else {
+                    document.getElementById("hashstats").innerHTML = "Lead zeros: " + z + ", Hashes: " + hashCount + ", Seconds: " + (hashTime/1000).toFixed(2) + ", Hashes/sec: " + ((hashCount*1000)/hashTime).toFixed(2);
+                }
+                document.getElementById("hashout").innerHTML = x;
+                if (isValid(x)) {
+                    document.getElementById("hashout").style.color = 'green';
+                    document.getElementById("binhash").style.color = 'green';
+                } else {
+                    document.getElementById("hashout").style.color = 'black';
+                    document.getElementById("binhash").style.color = 'black';
+                }
+
+            }
+
+            function notifyHashStart() {
+                document.getElementById("hashout").style.color = 'blue';
+                document.getElementById("binhash").style.color = 'blue';
+                //$('#binhash').html("...HASHING...");
+                document.getElementById("binhash").innerHTML = "... HASHING ..."
+                document.getElementById("hashstats").innerHTML = "Please wait"
+                document.getElementById("hashout").innerHTML = "...No suitable hash found yet...";
+            }
+
+            function emitIfValid(hash) {
+                let lastHash = document.getElementById("previoushash").value;
+                let inputNonce = document.getElementById("nonce").value;
+                let blockID = document.getElementById("currentblocknum").value;
+                let userName = document.getElementById("name").value;
+                let challengeString = document.getElementById("challenge").innerHTML;
+
+                // if the block is valid, lets submit it to the network
+                if (isValid(hash)) {
+                    if (!candidateHashWaiting) {
+                        socket.emit('valid_block_message', {
+                            data: hash,
+                            'blocknumber': blockID,
+                            'previous_hash': lastHash,
+                            'transactions': challengeString,
+                            'nonce': inputNonce,
+                            'userName': userName
+                        });
+                    }
+                    clearInterval(hashInterval); // if we are in mode 2 we need to stop hashing
+                    hashInterval = null;
+                }
+            }
+
+            function calcHash(mode) {
+                let lasthash = document.getElementById("previoushash").innerHTML;
+                let challengeString = document.getElementById("challenge").innerHTML;
+
+                let x = ""
+
+                if (mode == 9) { // Mode 9 is where we check the candidate hash
+                    lasthash = document.getElementById("candidate_previoushash").innerHTML;
+                    challengeString = document.getElementById("candidate_transactions").innerHTML;
+                    let inputNonce = document.getElementById("candidate_nonce").innerHTML;
+                    let totalChallenge = lasthash + challengeString + inputNonce;
+                    console.log(totalChallenge);
+                    hashTime = 0;
+
+                    x = sha256(totalChallenge);
+                    let z = leadingZeros(x);
+                    let binhash = parseInt((x.substring(0, 16)), 16).toString(2)
+                    binhash = "0000000000000000000000000000000000000000000000000000000000000000".substr(binhash.length) + binhash;
+                    document.getElementById("candidate_binhash").innerHTML = binhash + "..."
+                    document.getElementById("candidate_hashout").innerHTML = x;
+                    if (isValid(x)) {
+                        document.getElementById("candidate_hashout").style.color = 'green';
+                        document.getElementById("candidate_binhash").style.color = 'green';
+                        document.getElementById('previoushash').innerHTML = x;
+                        lasthash = x;
+                        //clear the previous data display
+                        document.getElementById("binhash").innerHTML = ""
+                        document.getElementById("hashstats").innerHTML = "";
+                        document.getElementById("hashout").innerHTML = "";
+                        document.getElementById("challenge").innerHTML = "";
+
+                        addBlock(x, JSON.parse(challengeString), document.getElementById("blockchain"))
+
+                    } else {
+                        document.getElementById("candidate_hashout").style.color = 'black';
+                        document.getElementById("candidate_binhash").style.color = 'black';
+                    }
+                    document.getElementById('candidate_box').style.backgroundColor = "#F1F1F1";
+
+
+
+                } else if (mode == 0) { // Mode 0 is manual where the user must enter the nonce manually
+                    let inputNonce = document.getElementById("nonce").value;
+                    let totalChallenge = lasthash + challengeString + inputNonce;
+                    hashTime = 0;
+
+                    x = sha256(totalChallenge);
+                    updateHashInfo(x);
+                    emitIfValid(x);
+
+
+                    //document.getElementById("hashout").innerHTML = x + " [" + z + " x " + hashCount + "]";
+                } else if (mode == 1) { // Mode 1 is where the hash button generates a nonce and calculates the hash
+                    let rando = Math.floor(Math.random() * 0xFFFFFFFFFFFF);
+                    let inputNonce = rando.toString(16).toUpperCase();
+                    let totalChallenge = lasthash + challengeString + inputNonce;
+                    hashTime = 0;
+
+                    x = sha256(totalChallenge);
+                    document.getElementById("nonce").value = inputNonce;
+                    updateHashInfo(x);
+                    emitIfValid(x);
+
+                } else if (mode == 2) { //Mode 2 is the automatic mode where it loops until a good hash is found
+                    hashCount = 0;
+                    notifyHashStart(); //should update the screen
+
+                    let start = 0;
+                    const complete = function (hash) {
+                        updateHashInfo(hash);
+                        emitIfValid(hash);
+                        x = hash;
+                    };
+                    // In order to allow the screen to update we have to timeout for 100 ms
+                    start = Date.now();
+                    hashInterval = setInterval(function () {
+                        let diff = parseInt(document.getElementById('difficulty').innerText);
+                        let z = 0;
+                        let x = 0;
+                        let inputNonce = "";
+                        let intervalStart = new Date();
+                        //hash unless
+                        //  someone else got a result (hashing = true)
+                        //  we got a valid answer
+                        //  it has been more than 90 ms
+                        while (hashing && (z < diff) && ((new Date().getTime() - intervalStart.getTime() ) < 95 )) {
+                            let rando = Math.floor(Math.random() * 0xFFFFFFFFFFFF);
+                            inputNonce = rando.toString(16).toUpperCase();
+                            let totalChallenge = lasthash + challengeString + inputNonce;
+
+                            x = sha256(totalChallenge);
+                            z = leadingZeros(x);
+                        }
+                        hashTime = Date.now() - start;
+                        document.getElementById("nonce").value = inputNonce;
+
+                        complete(x)
+                    }, 200);
+                }
+                return x;
+            }
+
+            // Handlers for the different forms in the page.
+            // These accept data from the user and send it to the server in a
+            // variety of ways
+             $('form#hash').submit(function (event) {
+                if ((hashing == false) || (hashInterval != null))
+                    return false;
+                calcHash(currentHashMode);
+                return false;
+            });
+
+            $('form#hash_candidate').submit(function (event) {
+                calcHash(9);
+                candidateHashWaiting = false;
+                return false;
+            });
+
+            $('form#setName').submit(function (event) {
+                let username = document.getElementById("name").value;
+                socket.emit('name_message', username);
+                return false;
+            });
+            $('form#test').submit(function (event) {
+                socket.emit('test_message', {data: 'Test message sent'});
+                return false;
+            });
+            $('form#broadcast').submit(function (event) {
+                socket.emit('broadcast_message', {data: 'broadcast triggered'});
+                return false;
+            });
+
+        });
+    </script>
+</head>
+<body>
+<div class="w3-container w3-teal">
+    <h1>Mining Simulation</h1>
+</div>
+<div class="w3-container">
+    <div class="w3-panel w3-light-gray">
+        <h2>Miner ID</h2>
+        <table class="w3-table">
+            <tr>
+                <td class="w3-center" id="address" style="width: 20%;">
+                    <input type="text" placeholder="Name" id="miningaddress">
+                </td>
+                <td>
+                    <label>Mining for </label>
+                    <input type="text" placeholder="Name" id="name">
+                    <!--                    <form id="setName" method="POST" action="#">
+                                            <button class="w3-button w3-teal">Register</button>
+                                        </form>
+                                        -->
+                </td>
+            </tr>
+        </table>
+        <br>
+    </div>
+
+    <div class="w3-panel w3-light-gray">
+        <h2>Mining</h2>
+        <table class="w3-table w3-bordered">
+            <tr>
+                <td class="w3-center" style="width: 20%;">Block Number</td>
+                <td>
+                    <div id="currentblocknum">{{ blocknum }}</div>
+                </td>
+            </tr>
+            <tr>
+                <td class="w3-center">Difficulty</td>
+                <td>
+                    <div id="difficulty">{{ difficulty }}</div>
+                </td>
+            </tr>
+            <tr>
+                <td class="w3-center">Reward</td>
+                <td>
+                    <div id="reward">{{ reward }}</div>
+                </td>
+            </tr>
+            <tr>
+                <td class="w3-center">Previous Hash</td>
+                <td>
+                    <div id="previoushash">{{last_hash}}</div>
+                </td>
+            </tr>
+            <tr>
+                <td class="w3-center">Transactions</td>
+                <td>
+                    <div id="challenge"></div>
+                </td>
+            </tr>
+            <tr>
+                <td class="w3-center">Nonce</td>
+                <td><input type="text" placeholder="Nonce" id="nonce"></td>
+            </tr>
+            <tr>
+                <td class="w3-center">
+                    <form id="hash" method="POST" action="#">
+                        <button class="w3-button w3-teal">Hash</button>
+                    </form>
+                </td>
+                <td>
+                    <div id="binhash" class="w3-monospace"></div>
+                    <div id="hashout" class="w3-monospace"></div>
+                    <div id="hashstats" class="w3-monospace"></div>
+                </td>
+            </tr>
+        </table>
+    </div>
+
+    <div class="w3-panel w3-light-gray">
+        <h2>Candidate Block</h2>
+        <table class="w3-table w3-bordered" id="candidate_box">
+            <tr>
+                <td class="w3-center" style="width: 20%">Previous Hash</td>
+                <td>
+                    <div id="candidate_previoushash">{{last_hash}}</div>
+                </td>
+            </tr>
+            <tr>
+                <td class="w3-center">Transactions</td>
+                <td>
+                    <div id="candidate_transactions"></div>
+                </td>
+            </tr>
+            <tr>
+                <td class="w3-center">Nonce</td>
+                <td>
+                    <div id="candidate_nonce"></div>
+                    <div id="candidate_hash"></div>
+                </td>
+            </tr>
+            <tr>
+                <td class="w3-center">
+                    <form id="hash_candidate" method="POST" action="#">
+                        <button class="w3-button w3-teal">Confirm Hash</button>
+                    </form>
+                </td>
+                <td>
+                    <div id="candidate_binhash" class="w3-monospace"></div>
+                    <div id="candidate_hashout" class="w3-monospace"></div>
+                </td>
+            </tr>
+        </table>
+    </div>
+    <br>
+    <div class="w3-container w3-blue-grey">
+        <h2>Blockchain</h2>
+
+        <div id="blockchain">
+        </div>
+    </div>
+    <div id="log"></div>
+    <form id="test" method="POST" action="#">
+        <button class="w3-button w3-teal">Test</button>
+    </form>
+    <form id="broadcast" method="POST" action="#">
+        <button class="w3-button w3-teal">Broadcast</button>
+    </form>
+
+</div>
+</body>
+</html>
